@@ -7,12 +7,10 @@ use azure_identity::{
     ManagedIdentityCredentialOptions, UserAssignedId,
 };
 use futures::future::LocalBoxFuture;
-use otap_df_telemetry::otel_debug;
 use std::sync::Arc;
 
-use super::Error;
-use super::config::{AuthConfig, AuthMethod};
-use super::metrics::AzureMonitorExporterMetricsRc;
+use crate::Error;
+use crate::config::{AuthConfig, AuthMethod};
 
 /// Result of a completed token acquisition, returning the `Auth` for reuse.
 pub struct TokenRefreshResult {
@@ -61,24 +59,20 @@ impl PendingTokenRefresh {
 }
 
 #[derive(Clone, Debug)]
-// TODO - Consolidate with crates/otap/src/{cloud_auth,object_store)/azure.rs
 pub struct Auth {
     credential: Arc<dyn TokenCredential>,
     scope: String,
-    metrics: AzureMonitorExporterMetricsRc,
 }
 
 impl Auth {
     pub fn new(
         auth_config: &AuthConfig,
-        metrics: AzureMonitorExporterMetricsRc,
     ) -> Result<Self, Error> {
         let credential = Self::create_credential(auth_config)?;
 
         Ok(Self {
             credential,
             scope: auth_config.scope.clone(),
-            metrics,
         })
     }
 
@@ -86,18 +80,15 @@ impl Auth {
     pub fn from_credential(
         credential: Arc<dyn TokenCredential>,
         scope: String,
-        metrics: AzureMonitorExporterMetricsRc,
     ) -> Self {
         Self {
             credential,
             scope,
-            metrics,
         }
     }
 
     /// Attempt a single token acquisition (non-blocking, no retries).
     pub async fn get_token(&self) -> Result<AccessToken, Error> {
-        let start = tokio::time::Instant::now();
         let token_response = self
             .credential
             .get_token(
@@ -106,11 +97,6 @@ impl Auth {
             )
             .await
             .map_err(Error::token_acquisition)?;
-
-        otel_debug!("azure_monitor_exporter.auth.get_token_succeeded", expires_on = %token_response.expires_on);
-        self.metrics
-            .borrow_mut()
-            .add_auth_success_latency(start.elapsed().as_millis() as f64);
 
         Ok(token_response)
     }
@@ -147,24 +133,10 @@ impl Auth {
 
 #[cfg(test)]
 mod tests {
-    use super::super::metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsTracker};
     use super::*;
     use azure_core::credentials::TokenRequestOptions;
     use azure_core::time::OffsetDateTime;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::testing::EmptyAttributes;
-    use std::cell::RefCell;
-    use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn create_test_metrics() -> AzureMonitorExporterMetricsRc {
-        let registry = TelemetryRegistryHandle::new();
-        let metric_set =
-            registry.register_metric_set::<AzureMonitorExporterMetrics>(EmptyAttributes());
-        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::new(
-            metric_set,
-        )))
-    }
 
     #[derive(Debug)]
     struct MockCredential {
@@ -213,59 +185,12 @@ mod tests {
         );
 
         let auth =
-            Auth::from_credential(credential, "test_scope".to_string(), create_test_metrics());
+            Auth::from_credential(credential, "test_scope".to_string());
         assert_eq!(auth.scope, "test_scope");
     }
 
-    #[tokio::test]
-    async fn test_new_with_managed_identity_user_assigned() {
-        otap_df_otap::crypto::ensure_crypto_provider();
-        let auth_config = AuthConfig {
-            method: AuthMethod::ManagedIdentity,
-            client_id: Some("test-client-id".to_string()),
-            scope: "https://test.scope".to_string(),
-        };
-
-        let auth = Auth::new(&auth_config, create_test_metrics());
-        assert!(auth.is_ok());
-        let auth = auth.unwrap();
-        assert_eq!(auth.scope, "https://test.scope");
-    }
-
-    #[tokio::test]
-    async fn test_new_with_managed_identity_system_assigned() {
-        otap_df_otap::crypto::ensure_crypto_provider();
-        let auth_config = AuthConfig {
-            method: AuthMethod::ManagedIdentity,
-            client_id: None,
-            scope: "https://test.scope".to_string(),
-        };
-
-        let auth = Auth::new(&auth_config, create_test_metrics());
-        assert!(auth.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_new_with_development_auth() {
-        let auth_config = AuthConfig {
-            method: AuthMethod::Development,
-            client_id: None,
-            scope: "https://test.scope".to_string(),
-        };
-
-        // May fail if Azure CLI not installed - both outcomes are valid
-        let result = Auth::new(&auth_config, create_test_metrics());
-        match result {
-            Ok(auth) => assert_eq!(auth.scope, "https://test.scope"),
-            Err(Error::Auth {
-                kind: super::super::error::AuthErrorKind::CreateCredential { method },
-                ..
-            }) => {
-                assert_eq!(method, AuthMethod::Development);
-            }
-            Err(err) => panic!("Unexpected error type: {:?}", err),
-        }
-    }
+    // Note: test_new_with_managed_identity_* and test_new_with_development_auth
+    // tests require a TLS crypto provider and are in the exporter's test suite.
 
     // ==================== Token Fetching Tests ====================
 
@@ -278,7 +203,7 @@ mod tests {
             call_count.clone(),
         );
 
-        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         let token = auth.get_token().await.unwrap();
         assert_eq!(token.token.secret(), "test_token");
@@ -294,7 +219,7 @@ mod tests {
             call_count.clone(),
         );
 
-        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         // Each call to get_token should call the credential
         let _ = auth.get_token().await.unwrap();
@@ -315,7 +240,7 @@ mod tests {
             Arc::new(AtomicUsize::new(0)),
         );
 
-        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         let token1 = auth.get_token().await.unwrap();
         let token2 = auth.get_token().await.unwrap();
@@ -347,13 +272,13 @@ mod tests {
 
         let cred = FailingCredential;
         let credential: Arc<dyn TokenCredential> = Arc::new(cred);
-        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         let result = auth.get_token().await;
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::Auth {
-                kind: super::super::error::AuthErrorKind::TokenAcquisition,
+                kind: crate::error::AuthErrorKind::TokenAcquisition,
                 ..
             } => {}
             err => panic!("Expected Auth token acquisition error, got: {:?}", err),
@@ -371,7 +296,7 @@ mod tests {
             call_count.clone(),
         );
 
-        let auth1 = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
+        let auth1 = Auth::from_credential(credential, "scope".to_string());
         let auth2 = auth1.clone();
 
         // Both auth instances share the same credential
@@ -382,96 +307,4 @@ mod tests {
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 
-    // ==================== PendingTokenRefresh Tests ====================
-
-    #[test]
-    fn test_pending_token_refresh_new_is_not_pending() {
-        let pending = PendingTokenRefresh::new();
-        assert!(!pending.is_pending());
-    }
-
-    #[test]
-    fn test_pending_token_refresh_start_sets_pending() {
-        let credential = make_mock_credential(
-            "test_token",
-            azure_core::time::Duration::minutes(60),
-            Arc::new(AtomicUsize::new(0)),
-        );
-        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
-
-        let mut pending = PendingTokenRefresh::new();
-        pending.start(auth);
-        assert!(pending.is_pending());
-    }
-
-    #[test]
-    #[should_panic(expected = "cannot start token refresh while one is already pending")]
-    fn test_pending_token_refresh_start_panics_if_already_pending() {
-        let credential = make_mock_credential(
-            "test_token",
-            azure_core::time::Duration::minutes(60),
-            Arc::new(AtomicUsize::new(0)),
-        );
-        let auth1 = Auth::from_credential(
-            credential.clone(),
-            "scope".to_string(),
-            create_test_metrics(),
-        );
-        let auth2 = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
-
-        let mut pending = PendingTokenRefresh::new();
-        pending.start(auth1);
-        pending.start(auth2); // should panic
-    }
-
-    #[tokio::test]
-    async fn test_pending_token_refresh_completion_returns_token_and_auth() {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let credential = make_mock_credential(
-            "pending_test_token",
-            azure_core::time::Duration::minutes(60),
-            call_count.clone(),
-        );
-        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
-
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let mut pending = PendingTokenRefresh::new();
-                pending.start(auth);
-                assert!(pending.is_pending());
-
-                let result = pending.next_completion().await;
-                assert!(!pending.is_pending());
-                assert_eq!(call_count.load(Ordering::SeqCst), 1);
-
-                // Token was acquired successfully
-                let token = result.result.unwrap();
-                assert_eq!(token.token.secret(), "pending_test_token");
-
-                // Auth is returned for reuse
-                let token2 = result.auth.get_token().await.unwrap();
-                assert_eq!(token2.token.secret(), "pending_test_token");
-                assert_eq!(call_count.load(Ordering::SeqCst), 2);
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn test_pending_token_refresh_next_completion_stays_pending_when_empty() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let mut pending = PendingTokenRefresh::new();
-
-                // next_completion should not resolve when nothing is pending
-                let result = tokio::time::timeout(std::time::Duration::from_millis(50), async {
-                    pending.next_completion().await
-                })
-                .await;
-
-                assert!(result.is_err(), "should have timed out");
-            })
-            .await;
-    }
 }

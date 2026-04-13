@@ -3,9 +3,9 @@
 
 use serde::Serialize;
 
-use super::client::AZURE_MONITOR_SOURCE_RESOURCEID_HEADER;
-use super::config::{ApiConfig, HeartbeatOverrides};
-use super::error::Error;
+use azure_monitor_uploader::client::AZURE_MONITOR_SOURCE_RESOURCEID_HEADER;
+use azure_monitor_uploader::config::{ApiConfig, HeartbeatOverrides};
+use azure_monitor_uploader::error::Error;
 use chrono::Utc;
 use otap_df_telemetry::otel_warn;
 use reqwest::{
@@ -156,7 +156,7 @@ impl Heartbeat {
                 .azure_monitor_source_resourceid
                 .as_deref()
                 .and_then(|v| {
-                    let encoded = super::client::url_encode_header_value(v);
+                    let encoded = azure_monitor_uploader::client::url_encode_header_value(v);
                     HeaderValue::from_str(&encoded).ok()
                 }),
         })
@@ -350,7 +350,7 @@ mod tests {
             dcr_endpoint: "https://test.ingest.monitor.azure.com".to_string(),
             dcr: "dcr-abc123".to_string(),
             stream_name: "Custom-Logs".to_string(),
-            schema: super::super::config::SchemaConfig {
+            schema: azure_monitor_uploader::config::SchemaConfig {
                 resource_mapping: HashMap::new(),
                 scope_mapping: HashMap::new(),
                 log_record_mapping: HashMap::new(),
@@ -453,7 +453,7 @@ mod tests {
             Error::Auth { kind, .. } => {
                 assert!(matches!(
                     kind,
-                    super::super::error::AuthErrorKind::Unauthorized
+                    azure_monitor_uploader::error::AuthErrorKind::Unauthorized
                 ));
             }
             e => panic!("Expected Auth/Unauthorized error, got: {:?}", e),
@@ -479,7 +479,7 @@ mod tests {
             Error::Auth { kind, .. } => {
                 assert!(matches!(
                     kind,
-                    super::super::error::AuthErrorKind::Forbidden
+                    azure_monitor_uploader::error::AuthErrorKind::Forbidden
                 ));
             }
             e => panic!("Expected Auth/Forbidden error, got: {:?}", e),
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn test_resource_id_header_set_when_configured() {
         let input = "/subscriptions/215b5735-fa8b-4dd4-86dc-997320c68c2d/resourceGroups/rg-test/providers/Microsoft.Kubernetes/connectedClusters/test-cluster/providers/microsoft.kubernetesconfiguration/extensions/pipe";
-        let encoded = super::super::client::url_encode_header_value(input);
+        let encoded = azure_monitor_uploader::client::url_encode_header_value(input);
         let header = HeaderValue::from_str(&encoded).expect("valid header value");
 
         let expected = "%2Fsubscriptions%2F215b5735-fa8b-4dd4-86dc-997320c68c2d%2FresourceGroups%2Frg-test%2Fproviders%2FMicrosoft.Kubernetes%2FconnectedClusters%2Ftest-cluster%2Fproviders%2Fmicrosoft.kubernetesconfiguration%2Fextensions%2Fpipe";
@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn test_resource_id_header_none_when_not_configured() {
         let result: Option<HeaderValue> = None::<String>.as_deref().and_then(|v| {
-            let encoded = super::super::client::url_encode_header_value(v);
+            let encoded = azure_monitor_uploader::client::url_encode_header_value(v);
             HeaderValue::from_str(&encoded).ok()
         });
         assert!(result.is_none());
@@ -639,7 +639,7 @@ mod tests {
             dcr_endpoint: "https://test.ingest.monitor.azure.com".to_string(),
             dcr: "dcr-abc123".to_string(),
             stream_name: "Custom-Logs".to_string(),
-            schema: super::super::config::SchemaConfig {
+            schema: azure_monitor_uploader::config::SchemaConfig {
                 resource_mapping: HashMap::new(),
                 scope_mapping: HashMap::new(),
                 log_record_mapping: HashMap::new(),

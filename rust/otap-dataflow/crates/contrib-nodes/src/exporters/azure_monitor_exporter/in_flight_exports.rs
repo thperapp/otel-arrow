@@ -7,8 +7,8 @@ use futures::future::LocalBoxFuture;
 use futures::stream::FuturesUnordered;
 use tokio::time::Duration;
 
-use super::client::LogsIngestionClient;
-use super::error::Error;
+use azure_monitor_uploader::client::LogsIngestionClient;
+use azure_monitor_uploader::error::Error;
 
 pub struct CompletedExport {
     pub batch_id: u64,
@@ -136,7 +136,6 @@ mod tests {
         LogsIngestionClient::from_parts(
             http_client,
             "http://localhost".to_string(),
-            create_test_metrics(),
         )
     }
 

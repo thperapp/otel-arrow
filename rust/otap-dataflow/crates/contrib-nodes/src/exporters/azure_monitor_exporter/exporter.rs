@@ -17,17 +17,17 @@ use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 
-use super::auth::{Auth, PendingTokenRefresh};
-use super::client::LogsIngestionClientPool;
-use super::config::Config;
+use azure_monitor_uploader::auth::{Auth, PendingTokenRefresh};
+use azure_monitor_uploader::client::LogsIngestionClientPool;
+use azure_monitor_uploader::config::Config;
 use super::error::Error;
-use super::gzip_batcher::FinalizeResult;
-use super::gzip_batcher::{self, GzipBatcher};
+use azure_monitor_uploader::gzip_batcher::FinalizeResult;
+use azure_monitor_uploader::gzip_batcher::{self, GzipBatcher};
 use super::heartbeat::Heartbeat;
 use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsRc};
 use super::state::AzureMonitorExporterState;
-use super::transformer::Transformer;
+use azure_monitor_uploader::transformer::Transformer;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use reqwest::header::HeaderValue;
 
@@ -67,7 +67,7 @@ impl AzureMonitorExporter {
         // Validate configuration
         config
             .validate()
-            .map_err(|e| Error::Config(e.to_string()))?;
+            .map_err(|e| azure_monitor_uploader::error::Error::Config(e.to_string()))?;
 
         // Register metrics with the telemetry system
         let metric_set = pipeline_ctx.register_metrics::<AzureMonitorExporterMetrics>();
@@ -94,7 +94,7 @@ impl AzureMonitorExporter {
             gzip_batcher,
             state: AzureMonitorExporterState::new(),
             metrics: metrics.clone(),
-            client_pool: LogsIngestionClientPool::new(MAX_IN_FLIGHT_EXPORTS + 1, metrics),
+            client_pool: LogsIngestionClientPool::new(MAX_IN_FLIGHT_EXPORTS + 1),
             in_flight_exports: InFlightExports::new(MAX_IN_FLIGHT_EXPORTS),
             last_batch_queued_at: tokio::time::Instant::now(),
             heartbeat,
@@ -132,7 +132,7 @@ impl AzureMonitorExporter {
                     .await
             }
             Err(e) => {
-                self.handle_export_failure(effect_handler, batch_id, row_count, e)
+                self.handle_export_failure(effect_handler, batch_id, row_count, e.into())
                     .await
             }
         }
@@ -262,7 +262,7 @@ impl AzureMonitorExporter {
                     self.queue_pending_batch(effect_handler).await?;
                 }
                 Ok(gzip_batcher::PushResult::TooLarge) => {
-                    let error = Error::LogEntryTooLarge;
+                    let error = azure_monitor_uploader::error::Error::LogEntryTooLarge;
                     self.metrics.borrow_mut().add_log_entry_too_large();
                     otel_warn!(
                         "azure_monitor_exporter.message.log_entry_too_large",
@@ -469,7 +469,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         );
 
         let mut msg_id = 0;
-        let auth = Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
+        let auth = Auth::new(&self.config.auth).map_err(|e| {
             let error = Error::AuthHandlerCreation(Box::new(e));
             EngineError::InternalError {
                 message: error.to_string(),
@@ -659,7 +659,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
 #[cfg(test)]
 mod tests {
-    use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
+    use azure_monitor_uploader::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
     use super::*;
     use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
@@ -821,11 +821,12 @@ mod tests {
             .add_msg_to_data(msg_id, context.clone(), payload);
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
-        let error = Error::ServerError {
+        let error: Error = azure_monitor_uploader::error::Error::ServerError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             body: "Simulated error".to_string(),
             retry_after: None,
-        };
+        }
+        .into();
 
         let _ = exporter
             .handle_export_failure(&effect_handler, batch_id, 10, error)

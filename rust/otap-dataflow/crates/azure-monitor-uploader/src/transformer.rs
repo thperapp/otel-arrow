@@ -13,8 +13,8 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use super::config::{Config, SchemaConfig};
-use super::error::Error;
+use crate::config::{Config, SchemaConfig};
+use crate::error::Error;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 
@@ -638,7 +638,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn create_test_config() -> Config {
-        use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
+        use crate::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
 
         Config {
             api: ApiConfig {
@@ -954,7 +954,7 @@ mod tests {
 
     #[test]
     fn test_empty_schema_mappings() {
-        use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
+        use crate::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
 
         let config = Config {
             api: ApiConfig {

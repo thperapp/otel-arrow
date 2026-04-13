@@ -6,7 +6,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use std::io::Write;
 
-use super::error::Error;
+use crate::error::Error;
 
 /// Hard limit for gzip-compressed payload accepted by the Azure Monitor Gateway.
 const COMPRESSED_LIMIT: usize = 1024 * 1024;
