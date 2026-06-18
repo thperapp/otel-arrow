@@ -142,6 +142,13 @@ pub enum AuthConfig {
         /// MSI resource identifier
         msi_resource: String,
     },
+    /// User-assigned managed identity (by object/principal ID)
+    UserManagedIdentityByObjectId {
+        /// Object (principal) ID of the managed identity
+        object_id: String,
+        /// MSI resource identifier
+        msi_resource: String,
+    },
     /// Workload identity (Kubernetes)
     WorkloadIdentity {
         /// MSI resource identifier
@@ -283,6 +290,11 @@ impl GenevaExporter {
                     resource_id: resource_id.clone(),
                 }
             }
+            AuthConfig::UserManagedIdentityByObjectId { object_id, .. } => {
+                AuthMethod::UserManagedIdentityByObjectId {
+                    object_id: object_id.clone(),
+                }
+            }
             AuthConfig::WorkloadIdentity { msi_resource } => AuthMethod::WorkloadIdentity {
                 resource: msi_resource.clone(),
             },
@@ -293,6 +305,7 @@ impl GenevaExporter {
             AuthConfig::SystemManagedIdentity { msi_resource }
             | AuthConfig::UserManagedIdentity { msi_resource, .. }
             | AuthConfig::UserManagedIdentityByArmResourceId { msi_resource, .. }
+            | AuthConfig::UserManagedIdentityByObjectId { msi_resource, .. }
             | AuthConfig::WorkloadIdentity { msi_resource } => Some(msi_resource.clone()),
             AuthConfig::Certificate { .. } => None,
         };
