@@ -11,6 +11,8 @@ use crate::event::{LogEvent, ObservedEventReporter};
 use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord};
 use otap_df_config::settings::telemetry::logs::LogLevel;
 use std::time::SystemTime;
+use std::sync::OnceLock;
+use tracing::field::{Field, Visit};
 use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
@@ -26,6 +28,120 @@ use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 #[must_use]
 pub fn create_env_filter(level: &LogLevel) -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level.as_str()))
+}
+
+// ---------------------------------------------------------------------------
+// Host log callback bridge
+//
+// Embedding hosts (e.g. the df_engine_shim used by mdsd) otherwise cannot see
+// otap-dataflow's internal `tracing` output: the controller installs its own
+// global and per-thread subscribers, so a host-installed *global* subscriber is
+// shadowed on the engine/admin/internal threads. To make geneva-exporter and
+// geneva-uploader diagnostics observable in the host's own logs, the host
+// registers a callback here and `HostCallbackLayer` -- added to every dispatch
+// built by `build_dispatch_with_filter` below -- forwards each formatted event
+// to it. The layer is a no-op until a callback is registered, so non-embedding
+// builds (and the default Noop provider) are unaffected.
+// ---------------------------------------------------------------------------
+
+/// Host log callback signature: `(level, target, message)` where `level` is
+/// `0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=TRACE`.
+pub type HostLogCallback = fn(level: u8, target: &str, message: &str);
+
+static HOST_LOG_CALLBACK: OnceLock<HostLogCallback> = OnceLock::new();
+
+/// Register a process-wide host log callback that receives every `tracing`
+/// event captured by the subscribers built in this module. Intended for
+/// embedding shims that bridge otap-dataflow logs into a host agent. Only the
+/// first registration takes effect.
+pub fn set_host_log_callback(callback: HostLogCallback) {
+    let _ = HOST_LOG_CALLBACK.set(callback);
+}
+
+/// A `tracing` layer that forwards formatted events to the callback registered
+/// via [`set_host_log_callback`]. No-op until a callback is registered, so it is
+/// safe to add to every dispatch unconditionally.
+struct HostCallbackLayer;
+
+impl<S> TracingLayer<S> for HostCallbackLayer
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let Some(callback) = HOST_LOG_CALLBACK.get().copied() else {
+            return;
+        };
+
+        let meta = event.metadata();
+        let level: u8 = match *meta.level() {
+            tracing::Level::ERROR => 0,
+            tracing::Level::WARN => 1,
+            tracing::Level::INFO => 2,
+            tracing::Level::DEBUG => 3,
+            tracing::Level::TRACE => 4,
+        };
+
+        let mut visitor = HostFieldVisitor::default();
+        event.record(&mut visitor);
+
+        // Prefer the explicit `message`; fall back to the event name used by the
+        // `otel_*` macros (e.g. "geneva_exporter.upload"). Skip tracing's default
+        // "event src/file:line" names.
+        let name = meta.name();
+        let has_useful_name = !name.is_empty() && !name.starts_with("event ");
+        let message = if !visitor.message.is_empty() {
+            if visitor.fields.is_empty() {
+                visitor.message
+            } else {
+                format!("{} {}", visitor.message, visitor.fields)
+            }
+        } else if has_useful_name {
+            if visitor.fields.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name} {}", visitor.fields)
+            }
+        } else {
+            visitor.fields
+        };
+
+        if message.is_empty() {
+            return;
+        }
+
+        callback(level, meta.target(), &message);
+    }
+}
+
+#[derive(Default)]
+struct HostFieldVisitor {
+    message: String,
+    fields: String,
+}
+
+impl Visit for HostFieldVisitor {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "message" {
+            self.message = value.to_string();
+        } else {
+            if !self.fields.is_empty() {
+                self.fields.push(' ');
+            }
+            self.fields.push_str(&format!("{}={}", field.name(), value));
+        }
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = format!("{value:?}");
+        } else {
+            if !self.fields.is_empty() {
+                self.fields.push(' ');
+            }
+            self.fields
+                .push_str(&format!("{}={:?}", field.name(), value));
+        }
+    }
 }
 
 /// Combined tracing configuration for a thread.
@@ -100,17 +216,32 @@ pub enum ProviderSetup {
 impl ProviderSetup {
     fn build_dispatch_with_filter(&self, filter: EnvFilter, context_fn: LogContextFn) -> Dispatch {
         match self {
-            ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
+            ProviderSetup::Noop => {
+                // Even in Noop mode, route events to the host callback if one is
+                // registered (no-op otherwise), so an embedding shim can observe
+                // otap-dataflow internals without changing the configured provider.
+                Dispatch::new(Registry::default().with(filter).with(HostCallbackLayer))
+            }
 
             ProviderSetup::ConsoleDirect => {
                 let layer =
                     StructuredLoggingLayer::new(Some(ConsoleWriter::color()), None, context_fn);
-                Dispatch::new(Registry::default().with(filter).with(layer))
+                Dispatch::new(
+                    Registry::default()
+                        .with(filter)
+                        .with(layer)
+                        .with(HostCallbackLayer),
+                )
             }
 
             ProviderSetup::InternalAsync { reporter } => {
                 let layer = StructuredLoggingLayer::new(None, Some(reporter.clone()), context_fn);
-                Dispatch::new(Registry::default().with(filter).with(layer))
+                Dispatch::new(
+                    Registry::default()
+                        .with(filter)
+                        .with(layer)
+                        .with(HostCallbackLayer),
+                )
             }
         }
     }
